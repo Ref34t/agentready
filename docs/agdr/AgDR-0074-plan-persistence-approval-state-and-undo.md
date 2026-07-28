@@ -38,7 +38,9 @@ The **action ID scheme** — `hash(type, target.kind, target.id)`, with `origin_
 An action moves through `proposed → approved → generated → applied`, with `failed` and `skipped` as terminals. Two constraints make the flow safe, and both are properties of *state*, not of prose:
 
 - **`Apply_Engine` accepts only `approved`.** No other status can reach a write.
-- **`approved` is settable only via a nonce- and capability-gated route asserting `plan.user_id === current_user_id`.** Ownership is checked against the stored plan, not inferred from the request. This is the same input-dependent condition that keeps apply off the Abilities API — see AgDR-0073 § 3.
+- **`approved` is settable only via a nonce- and capability-gated route asserting `plan.user_id === current_user_id`.** Ownership is checked against the **stored plan**, not inferred from the request.
+
+That second point is *not* an argument that a WP Ability could not express the same check — [AgDR-0073](AgDR-0073-action-derivation-inversion-and-ability-asymmetry.md) § 3 explicitly refutes that framing, and this record does not reopen it. The relevant connection is narrower: reading plan state to authorise, and then re-reading it to write, is a check-then-act split (AgDR-0073's reason 3). Asserting ownership inside the same request that performs the write is what closes that window.
 
 **Two-phase actions.** Where the "after" does not exist at plan time, the action carries `phase: 'generate_then_preview'` rather than `'direct'`. For descriptions:
 
@@ -56,13 +58,16 @@ For descriptions the undo is exact, and its exactness comes from writing `_manua
 
 - Capture the prior raw `_manual` **before** writing.
 - On undo: empty → `clear_manual()`; non-empty → `set_manual( $prior )`.
-- That restores the resolved description in all three starting states (no description, `_auto` only, pre-existing `_manual`), because clearing `_manual` falls resolution back to an untouched `_auto`.
+- That restores the resolved description in all three starting states (no description, `_auto` only, pre-existing `_manual`), because clearing `_manual` falls resolution back to an **untouched** `_auto`.
 
-Three shipped-code properties this depends on, each confirmed in source rather than assumed:
+Four shipped-code properties this depends on, each confirmed in source rather than assumed:
 
 - `should_schedule()` returns `false` outright when `_manual` is non-empty (`:325–328`), so cron cannot overwrite an approved description.
 - `get_cached_description()` resolves `_manual` first (`:658–662`), so the approved text is what the site actually serves.
-- `regenerate()` clears the `_auto` family and preserves `_manual` — *"admin overrides survive regenerate"* (`:625–630`).
+- `regenerate()` clears the `_auto` family and preserves `_manual` — *"admin overrides survive regenerate"* (`:625–631`, the quoted phrase on `:627`).
+- `set_manual()` fires `notify_description_changed()` **only when the value actually changed** (`:605–607`), so undo is no-op safe. This one is load-bearing rather than decorative: `/llms.txt` is composed and recomposed off that notification (`:710–715`), so it is the link between "the `_manual` slot was restored" and "the file the site serves was rebuilt." Undo fires it on every path.
+
+**The exactness claim is scoped to the `_manual` slot and the cron leg.** One path breaks the *resolved-description* half of it: `regenerate()` deletes `_auto` unconditionally (`:639`) with no `_manual` guard, and the per-post route (`handle_regenerate()`, `:320–336`) carries no such guard either — the bulk path does. So from the `_auto`-only starting state: apply → per-post Regenerate → `_auto` is gone → undo's `clear_manual()` now resolves to empty rather than to the original auto text. The `_manual` slot is still restored exactly; what is not restored is what the site resolves. Rev 5 knows this fact (it used it to reject a different action's undo) but did not draw it through to this one. It is an accepted limit, not a defect to fix in v1 — undo guarantees the slot, not the surrounding state a separate admin action has since destroyed.
 
 **Two finite consequences that must surface in the UI, not in a changelog:**
 
@@ -88,6 +93,7 @@ Chosen: **capped options with `autoload: no` for the active plan and a 20-deep s
 - **#317 can define the value objects and the status enum** against a fixed lifecycle, and the stored-approval requirement pins why the ID scheme from AgDR-0073 must be re-generate-stable.
 - **Undo has a finite lifetime**, and the UI carries a pre-apply disclosure obligation. If that line is dropped during implementation the model is no longer honest — this is a UI requirement, not a nicety.
 - **An applied description stops auto-refreshing.** The apply UI owes the owner one line about it. Reversible via `clear_manual()`.
+- **Undo guarantees the `_manual` slot, not the resolved description**, if a separate admin action has destroyed the `_auto` it would fall back to — the unguarded per-post `regenerate()` path above. Worth knowing before anyone writes "undo restores the previous description" in owner-facing copy; the honest phrasing is that it removes what the Agent applied.
 - **No migration, no migration AgDR, no schema gate** for v1 — a direct consequence of choosing options over a table.
 - **Resumable plans (FR-16) sit on the pre-committed cut line**, so a plan interrupted mid-review may not be recoverable in v1 even though the *store* is durable. Durability of the option is not the same property as resumability of the flow; do not read one as delivering the other.
 - **Concurrency is not addressed.** See below.
