@@ -297,7 +297,18 @@ final class Description_Orchestrator_Test extends WP_UnitTestCase {
 		);
 	}
 
-	public function test_regenerate_preserves_manual_override(): void {
+	/**
+	 * A sticky post is refused outright — no meta is touched and no job is
+	 * queued (#330).
+	 *
+	 * Before the guard, `regenerate()` deleted the whole `_auto` family and
+	 * queued a run that `should_schedule()` then refused, so the cached
+	 * description was destroyed with nothing to replace it. This test asserts
+	 * `_auto` survives, which is what the old
+	 * `test_regenerate_preserves_manual_override` did not check — it set
+	 * `_auto` and only asserted `_manual`, so the data loss passed review.
+	 */
+	public function test_regenerate_refuses_and_touches_nothing_when_manual_is_sticky(): void {
 		$post = self::factory()->post->create_and_get(
 			array( 'post_type' => 'post', 'post_status' => 'publish' )
 		);
@@ -307,13 +318,78 @@ final class Description_Orchestrator_Test extends WP_UnitTestCase {
 			'Sticky admin description.'
 		);
 		update_post_meta( $post->ID, Description_Orchestrator::META_KEY_AUTO, 'old auto' );
+		update_post_meta(
+			$post->ID,
+			Description_Orchestrator::META_KEY_GENERATED_FOR_MODIFIED,
+			'2000-01-01 00:00:00'
+		);
 
-		Description_Orchestrator::regenerate( $post );
+		// Creating the post queued a job before `_manual` existed, so the
+		// already-pending short-circuit would refuse first and this test would
+		// pass without ever reaching the stickiness guard. Clear that state so
+		// the guard is what's under test.
+		wp_clear_scheduled_hook(
+			Description_Orchestrator::SCHEDULE_ACTION,
+			array( (int) $post->ID )
+		);
+		delete_post_meta( $post->ID, Description_Orchestrator::META_KEY_STATUS );
+		self::assertSame(
+			'',
+			Description_Orchestrator::get_status( (int) $post->ID ),
+			'Precondition: the pending short-circuit must not be the reason for the refusal.'
+		);
 
+		$result = Description_Orchestrator::regenerate( $post );
+
+		self::assertFalse( $result, 'A sticky post must report the refusal.' );
 		self::assertSame(
 			'Sticky admin description.',
 			(string) get_post_meta( $post->ID, Description_Orchestrator::META_KEY_MANUAL, true )
 		);
+		self::assertSame(
+			'old auto',
+			(string) get_post_meta( $post->ID, Description_Orchestrator::META_KEY_AUTO, true ),
+			'The cached _auto must survive — regeneration would not have replaced it.'
+		);
+		self::assertSame(
+			'2000-01-01 00:00:00',
+			(string) get_post_meta(
+				$post->ID,
+				Description_Orchestrator::META_KEY_GENERATED_FOR_MODIFIED,
+				true
+			),
+			'The staleness bookmark must survive alongside the _auto it describes.'
+		);
+		self::assertSame(
+			'',
+			Description_Orchestrator::get_status( (int) $post->ID ),
+			'No job may be queued for a post the cron would refuse.'
+		);
+		self::assertFalse(
+			wp_next_scheduled(
+				Description_Orchestrator::SCHEDULE_ACTION,
+				array( (int) $post->ID )
+			)
+		);
+	}
+
+	/**
+	 * The sticky refusal is distinguishable from the already-pending one, so
+	 * callers can report the right reason rather than defaulting to "pending".
+	 */
+	public function test_has_manual_reports_stickiness_and_ignores_whitespace(): void {
+		$post_id = (int) self::factory()->post->create();
+
+		self::assertFalse( Description_Orchestrator::has_manual( $post_id ) );
+
+		update_post_meta( $post_id, Description_Orchestrator::META_KEY_MANUAL, "   \n\t " );
+		self::assertFalse(
+			Description_Orchestrator::has_manual( $post_id ),
+			'Whitespace-only is a clear, matching set_manual() treating blank input as such.'
+		);
+
+		update_post_meta( $post_id, Description_Orchestrator::META_KEY_MANUAL, 'Real override.' );
+		self::assertTrue( Description_Orchestrator::has_manual( $post_id ) );
 	}
 
 	public function test_regenerate_is_idempotent_when_pending(): void {

@@ -322,8 +322,7 @@ PROMPT;
 
 		$post_id = (int) $post->ID;
 
-		$manual = \get_post_meta( $post_id, self::META_KEY_MANUAL, true );
-		if ( \is_string( $manual ) && '' !== \trim( $manual ) ) {
+		if ( self::has_manual( $post_id ) ) {
 			return false;
 		}
 
@@ -585,6 +584,31 @@ PROMPT;
 	}
 
 	/**
+	 * Whether a sticky admin override is present.
+	 *
+	 * The read path for the scheduling decisions: whether to schedule
+	 * (`should_schedule()`), whether to regenerate (`regenerate()`), and how
+	 * the REST route and WP-CLI report a refusal.
+	 *
+	 * Whitespace-only counts as absent, matching `set_manual()`'s treatment
+	 * of blank input as a clear. Three other sites apply that same test
+	 * inline — `get_cached_description()`, the REST row projection, and the
+	 * CLI status counter; folding them in is worthwhile, but they are
+	 * presentation rather than the decision this guards.
+	 *
+	 * Two stickiness reads deliberately do NOT route through here:
+	 * `invalidate()` compares untrimmed (pre-existing, and unreachable while
+	 * `set_manual()` is the only writer), and the REST status filter tests
+	 * `META_KEY_MANUAL` with SQL `EXISTS` / `NOT EXISTS`, which no PHP helper
+	 * can express.
+	 */
+	public static function has_manual( int $post_id ): bool {
+		$manual = \get_post_meta( $post_id, self::META_KEY_MANUAL, true );
+
+		return \is_string( $manual ) && '' !== \trim( $manual );
+	}
+
+	/**
 	 * Set the sticky admin-override `_manual` slot. Single write path so
 	 * the REST controller, WP-CLI, and any future programmatic surface all
 	 * share sanitisation + truncation.
@@ -624,15 +648,27 @@ PROMPT;
 
 	/**
 	 * Hard reset: clear the `_auto` slot + schedule a fresh cron run.
-	 * `_manual` is preserved — admin overrides survive regenerate.
 	 *
-	 * Idempotent: returns false when a cron event for this post is
-	 * already pending.
+	 * Returns false without touching any meta in two cases:
+	 *
+	 *   1. A cron event for this post is already pending (idempotence).
+	 *   2. A sticky `_manual` override is set. `should_schedule()` refuses
+	 *      such posts, so `run()` would exit early and generate nothing —
+	 *      clearing `_auto` first would destroy the cached description with
+	 *      no replacement, unrecoverably (#330). Callers must clear the
+	 *      override first; the descriptions UI already says so.
+	 *
+	 * Use `has_manual()` to tell the two refusals apart before calling, so
+	 * the reason can be surfaced to whoever asked.
 	 */
 	public static function regenerate( \WP_Post $post ): bool {
 		$post_id = (int) $post->ID;
 
 		if ( self::STATUS_PENDING === self::get_status( $post_id ) ) {
+			return false;
+		}
+
+		if ( self::has_manual( $post_id ) ) {
 			return false;
 		}
 

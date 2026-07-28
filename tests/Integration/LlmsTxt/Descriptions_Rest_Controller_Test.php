@@ -292,6 +292,41 @@ final class Descriptions_Rest_Controller_Test extends WP_UnitTestCase {
 		);
 
 		self::assertSame( 409, $response->get_status() );
+		self::assertSame( 'rest_ai_client_unavailable', $response->get_data()['code'] ?? '' );
+	}
+
+	/**
+	 * The route refuses a sticky post rather than clearing its cached `_auto`
+	 * and queueing a run the cron would decline (#330).
+	 *
+	 * Environment-independent: the sticky check runs before the AI-client
+	 * check, so this holds whether or not a client is configured — which is
+	 * also why it asserts the error code, not just the shared 409 status.
+	 */
+	public function test_regenerate_returns_409_and_preserves_auto_when_manual_is_sticky(): void {
+		\wp_set_current_user( $this->make_admin() );
+		$post_id = $this->seed_post();
+		\update_post_meta( $post_id, Description_Orchestrator::META_KEY_AUTO, 'cached auto' );
+		\update_post_meta( $post_id, Description_Orchestrator::META_KEY_MANUAL, 'Sticky override.' );
+
+		// Seeding queued a job before `_manual` existed. Clear it so the
+		// stickiness refusal is what's observed, not leftover seed state.
+		\wp_clear_scheduled_hook( Description_Orchestrator::SCHEDULE_ACTION, array( $post_id ) );
+		\delete_post_meta( $post_id, Description_Orchestrator::META_KEY_STATUS );
+
+		$response = \rest_do_request(
+			new WP_REST_Request( 'POST', $this->path( '/' . $post_id . '/regenerate' ) )
+		);
+
+		self::assertSame( 409, $response->get_status() );
+		self::assertSame( 'rest_manual_description_sticky', $response->get_data()['code'] ?? '' );
+		self::assertSame(
+			'cached auto',
+			(string) \get_post_meta( $post_id, Description_Orchestrator::META_KEY_AUTO, true )
+		);
+		self::assertFalse(
+			\wp_next_scheduled( Description_Orchestrator::SCHEDULE_ACTION, array( $post_id ) )
+		);
 	}
 
 	public function test_bulk_regenerate_stale_schedules_missing_posts(): void {

@@ -324,6 +324,22 @@ final class Descriptions_Rest_Controller {
 			return $post;
 		}
 
+		// Checked before AI availability, mirroring the descriptions UI's own
+		// precedence: a sticky post can never be regenerated, which is a more
+		// specific answer than "the client isn't configured". The UI disables
+		// the button for these rows, but a non-browser caller (WP-CLI, a direct
+		// REST call, an ability) arrives with no such guard (#330).
+		if ( Description_Orchestrator::has_manual( (int) $post->ID ) ) {
+			return new \WP_Error(
+				'rest_manual_description_sticky',
+				\__(
+					'Manual override is sticky. Clear the manual description before regenerating.',
+					'mokhai-agent-readiness-kit'
+				),
+				array( 'status' => 409 )
+			);
+		}
+
 		if ( ! Client_Wrapper::has_ai_client() ) {
 			return new \WP_Error(
 				'rest_ai_client_unavailable',
