@@ -35,7 +35,7 @@ The **action ID scheme** — `hash(type, target.kind, target.id)`, with `origin_
 
 ### 2. Approval state and the write gate
 
-An action moves through `proposed → approved → generated → applied`, with `failed` and `skipped` as terminals. Two constraints make the flow safe, and both are properties of *state*, not of prose:
+An action's status is drawn from the set `proposed | approved | generated | applied | failed | skipped`. The common path is `proposed → approved → applied`; `generated` is traversed **only** by two-phase actions, so a `phase: 'direct'` action never enters it. `failed` and `skipped` are terminals. Two constraints make the flow safe, and both are properties of *state*, not of prose:
 
 - **`Apply_Engine` accepts only `approved`.** No other status can reach a write.
 - **`approved` is settable only via a nonce- and capability-gated route asserting `plan.user_id === current_user_id`.** Ownership is checked against the **stored plan**, not inferred from the request.
@@ -67,7 +67,23 @@ Four shipped-code properties this depends on, each confirmed in source rather th
 - `regenerate()` clears the `_auto` family and preserves `_manual` — *"admin overrides survive regenerate"* (`:625–631`, the quoted phrase on `:627`).
 - `set_manual()` fires `notify_description_changed()` **only when the value actually changed** (`:605–607`), so undo is no-op safe. This one is load-bearing rather than decorative: `/llms.txt` is composed and recomposed off that notification (`:710–715`), so it is the link between "the `_manual` slot was restored" and "the file the site serves was rebuilt." Undo fires it on every path.
 
-**The exactness claim is scoped to the `_manual` slot and the cron leg.** One path breaks the *resolved-description* half of it: `regenerate()` deletes `_auto` unconditionally (`:639`) with no `_manual` guard, and the per-post route (`handle_regenerate()`, `:320–336`) carries no such guard either — the bulk path does. So from the `_auto`-only starting state: apply → per-post Regenerate → `_auto` is gone → undo's `clear_manual()` now resolves to empty rather than to the original auto text. The `_manual` slot is still restored exactly; what is not restored is what the site resolves. Rev 5 knows this fact (it used it to reject a different action's undo) but did not draw it through to this one. It is an accepted limit, not a defect to fix in v1 — undo guarantees the slot, not the surrounding state a separate admin action has since destroyed.
+**The exactness claim is scoped to the `_manual` slot.** Undo restores the slot it wrote; it does not restore surrounding state that a separate, owner-initiated action has since destroyed. **Two** paths do exactly that, neither carrying a `_manual` guard:
+
+- the per-post REST route — `Descriptions_Rest_Controller::handle_regenerate()` (`includes/LlmsTxt/Descriptions_Rest_Controller.php:321–338`)
+- WP-CLI — `Llms_Txt_Descriptions_Command::regen()`, which calls `regenerate()` at `includes/Cli/Llms_Txt_Descriptions_Command.php:249`
+
+The *bulk* path is not a third case: it never calls `regenerate()` at all.
+
+Both reach `Description_Orchestrator::regenerate()`, which deletes the `_auto` family unconditionally (`:639`). From the `_auto`-only starting state: apply sets `_manual` → Regenerate deletes `_auto` and schedules cron → `run()`'s re-check (`:437`) refuses because `_manual` is non-empty → `_auto` never comes back. Undo's `clear_manual()` then resolves past an `_auto` that no longer exists, and `get_cached_description()` returns empty, leaving the caller on its excerpt fallback (`:653–656`) rather than the original generated text.
+
+Two things follow, and they are the reason this is an accepted limit rather than a defect:
+
+- **The loss is already permanent at Regenerate time, before undo runs.** This is not a race undo could win by being faster or better-ordered — the state is degraded the moment Regenerate executes, and undo neither causes the loss nor could have prevented it.
+- **It is ordinary undo semantics.** Undo guarantees the slot it wrote; resolution follows current state. This is a *different class* from the hazard rev 5 rejected at `:143` — there, the Agent's **own** action destroyed `_auto` while capturing nothing, so the Agent was responsible for the loss. Here an owner-initiated action outside the plan destroys it. Rev 5's actual FR-21/23 concern — cron overwriting approved text — is closed by `should_schedule()` (`:325–328`) plus `run()`'s re-check (`:437`).
+
+The mitigation worth naming, since this record's whole thesis is *capture, don't recompute*: widen the undo capture to the `_auto` family, not just `_manual`. Deferrable for v1 — the degradation needs a deliberate owner action, and the fallback is an excerpt rather than nothing — but it is the honest fix, and a UI warning alone cannot substitute for it because WP-CLI bypasses the UI entirely.
+
+**Undo's authorisation gate.** Undo is a write, so it takes the same gate as apply: nonce- and capability-gated, asserting `plan.user_id === current_user_id` against the stored plan. Rev 5 does not state this and it must not be inferred — an undo endpoint that authorises more loosely than the apply it reverses would let one administrator revert another's approved change without ever holding the plan.
 
 **Two finite consequences that must surface in the UI, not in a changelog:**
 
@@ -83,6 +99,7 @@ Four shipped-code properties this depends on, each confirmed in source rather th
 | Custom table | Room to grow; queryable; no size ceiling | A schema change, a migration, and a migration AgDR for data that lives ~20 sessions. Cost far exceeds the need for v1 |
 | **Undo as a captured payload (chosen)** | Exact — restores the literal prior value; works identically across all three starting description states | Costs storage in the session record, and its lifetime is bounded by ring eviction |
 | Undo by recomputation | No stored payload; no eviction window | Cannot restore what it cannot recompute — a prior `_manual` written by a human is not derivable from anything, and the `rewarm` action was cut in part for exactly this failure |
+| Widen the capture to the `_auto` family too | Would survive an owner-initiated `regenerate()` between apply and undo, closing the one gap in the exactness claim; consistent with "capture, don't recompute" | More payload per action against a size-capped ring, shortening the undo window it is meant to protect; the degradation it guards against needs a deliberate owner action and lands on an excerpt fallback rather than nothing. **Deferred, not rejected** — the honest fix if the gap proves real in practice |
 
 ## Decision
 
@@ -102,7 +119,7 @@ Chosen: **capped options with `autoload: no` for the active plan and a 20-deep s
 
 Recorded so the gap is visible rather than discovered later. Neither was resolved by rev 5, and this record does **not** decide them:
 
-- **Concurrent editing.** Two administrators reviewing plans simultaneously share one active-plan option. The likely outcome is last-writer-wins, which could silently discard the other's approvals. Single-admin sites — the overwhelming majority for this plugin — never hit it, which is presumably why it did not surface in review. Worth an explicit call before any multi-admin deployment.
+- **Concurrent editing.** Two administrators reviewing plans simultaneously share one active-plan option. The likely outcome is last-writer-wins: one admin's plan overwrites the other's. Note what the ownership assertion already buys — because apply requires `plan.user_id === current_user_id`, the losing admin cannot have *another* admin's approvals applied under their name. So the residual risk is **availability** (a plan is lost and must be regenerated), not **integrity** (approvals crossing between users). That distinction is why this is a flag rather than a blocker. Single-admin sites — the overwhelming majority for this plugin — never hit it, which is presumably why it did not surface in review. Worth an explicit call before any multi-admin deployment.
 - **Ring-buffer sizing.** "Last 20" and "size-capped" fix the shape, not the byte ceiling. The cap interacts with the undo window: a plan with 20 description candidates is much larger than one with three exposure toggles, so a byte cap could evict sessions faster than the count suggests and shorten the undo lifetime the UI just promised. The concrete limit belongs to #322's implementation.
 
 ## Artifacts
