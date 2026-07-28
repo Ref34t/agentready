@@ -586,10 +586,16 @@ PROMPT;
 	/**
 	 * Whether a sticky admin override is present.
 	 *
-	 * Single read path for the "is this post sticky?" question, which
-	 * `should_schedule()`, `regenerate()`, the REST controller, and WP-CLI
-	 * all need to ask. Whitespace-only counts as absent, matching
-	 * `set_manual()`'s treatment of blank input as a clear.
+	 * The read path for every decision that turns on stickiness: whether to
+	 * schedule (`should_schedule()`), whether to regenerate (`regenerate()`),
+	 * and how the REST route and WP-CLI report a refusal.
+	 *
+	 * Whitespace-only counts as absent, matching `set_manual()`'s treatment
+	 * of blank input as a clear. That is the same test the presentation-side
+	 * reads use — `get_cached_description()`, the REST row projection, and the
+	 * CLI status counter each still trim inline; folding those into this
+	 * helper is worthwhile but is presentation, not the scheduling decision
+	 * this guards.
 	 */
 	public static function has_manual( int $post_id ): bool {
 		$manual = \get_post_meta( $post_id, self::META_KEY_MANUAL, true );
