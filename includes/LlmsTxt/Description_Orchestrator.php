@@ -586,16 +586,21 @@ PROMPT;
 	/**
 	 * Whether a sticky admin override is present.
 	 *
-	 * The read path for every decision that turns on stickiness: whether to
-	 * schedule (`should_schedule()`), whether to regenerate (`regenerate()`),
-	 * and how the REST route and WP-CLI report a refusal.
+	 * The read path for the scheduling decisions: whether to schedule
+	 * (`should_schedule()`), whether to regenerate (`regenerate()`), and how
+	 * the REST route and WP-CLI report a refusal.
 	 *
 	 * Whitespace-only counts as absent, matching `set_manual()`'s treatment
-	 * of blank input as a clear. That is the same test the presentation-side
-	 * reads use — `get_cached_description()`, the REST row projection, and the
-	 * CLI status counter each still trim inline; folding those into this
-	 * helper is worthwhile but is presentation, not the scheduling decision
-	 * this guards.
+	 * of blank input as a clear. Three other sites apply that same test
+	 * inline — `get_cached_description()`, the REST row projection, and the
+	 * CLI status counter; folding them in is worthwhile, but they are
+	 * presentation rather than the decision this guards.
+	 *
+	 * Two stickiness reads deliberately do NOT route through here:
+	 * `invalidate()` compares untrimmed (pre-existing, and unreachable while
+	 * `set_manual()` is the only writer), and the REST status filter tests
+	 * `META_KEY_MANUAL` with SQL `EXISTS` / `NOT EXISTS`, which no PHP helper
+	 * can express.
 	 */
 	public static function has_manual( int $post_id ): bool {
 		$manual = \get_post_meta( $post_id, self::META_KEY_MANUAL, true );
