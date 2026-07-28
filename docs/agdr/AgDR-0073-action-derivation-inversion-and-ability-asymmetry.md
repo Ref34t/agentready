@@ -35,7 +35,7 @@ Two structural consequences follow, both discovered as review findings rather th
 
 ### 2. Classification — presence of a code is not evidence of a defect
 
-All 32 codes are classified negative / informational / positive, and each catalog entry carries a predicate over signals, because several codes fire unconditionally within a branch. Two classifications are counter-intuitive enough to be worth recording, since the drift test asserts **class** and a wrong class would have been frozen into CI as correct:
+All 32 codes are classified negative / informational / positive, and each catalog entry carries a predicate over signals, because several codes fire unconditionally within a branch. Two codes are counter-intuitive enough to be worth recording — **one was a wrong class, one was a correct class held for the wrong reason** — since the drift test asserts **class** and a wrong class would have been frozen into CI as correct, while a wrong rationale survives in the prose a future reader relies on:
 
 - **`ih_llm_disabled` is positive.** It fires in the `else` awarding **+60** (`Engine.php:454–460`); the docblock states opting out of the LLM stack "is NOT penalised — a valid steady-state configuration." Classifying it negative would generate advisory noise about a deliberate owner choice, on an already-optimised site.
 - **`mcd_provider_configurable` is positive** — but the originally-stated reason was wrong, and the reason is what a reader relies on. It does *not* fire "alongside" `mcd_provider_detected`: the two are an if/else (`Engine.php:669–675`) selected by whether `config_url` is a non-empty string. Both branches sit inside the provider-detected path, so either way a provider was detected.
@@ -47,7 +47,7 @@ Two sub-scores are **proportional**, so a code-keyed catalog is blind to partial
 
 ### 3. The ability asymmetry — apply is deliberately not a WP Ability
 
-The plugin already exposes five WP Abilities (`Abilities/Registrar.php`) — audit-run, profile-read, profile-set-exposure, llms-txt-regenerate, md-view-preview — and they are **not** uniformly read-only. Only `profile-read` and `md-view-preview` carry `'readonly' => true` plus `'mcp' => ['public' => true]` (`Registrar.php:128`, `:236`); `mokhai/profile-set-exposure` (`Profile_Ability::set_exposure`, `:61–73`) and `llms-txt-regenerate` are genuine *mutating* abilities established by AgDR-0044.
+The plugin already exposes five WP Abilities (`Abilities/Registrar.php`) — `audit-run`, `profile-read`, `profile-set-exposure`, `llms-txt-regenerate`, `md-view-preview` — and they are **not** uniformly read-only. **All five carry `'mcp' => ['public' => true]`** (`Registrar.php:111`, `:129`, `:166`, `:192`, `:237`) — the public-surface property is universal, not a concession made for the read-only ones. Only two carry `'readonly' => true`: `profile-read` (`:128`) and `md-view-preview` (`:236`). The other **three** mutate: `profile-set-exposure` (`Profile_Ability::set_exposure`, `:61–73`) writes the profile option, `llms-txt-regenerate` rewrites the cache, and `audit-run` writes the Context Score cache (classified as such in AgDR-0044's own table). So the majority of Mokhai's registered abilities already write something.
 
 So the asymmetry is not "Mokhai doesn't do write abilities." It is narrower and needs stating precisely: **the Agent's read surface may be an ability; the Agent's plan-apply step must not be.** Three reasons, in descending order of load-bearing-ness:
 
@@ -55,7 +55,7 @@ So the asymmetry is not "Mokhai doesn't do write abilities." It is narrower and 
 2. **Abilities are a public, discoverable surface.** Registered abilities are invocable by any REST/MCP client holding the capability, from outside the propose → approve → apply flow. That is exactly right for reading a profile or running an audit; for a bulk multi-write carrying undo obligations and staleness re-validation, it hands out the write half of the flow without the approval half.
 3. **`profile-set-exposure` is safe as an ability precisely because it is unlike apply** — a single, idempotent, fully-specified setting write with its own sanitisation. No plan state, no bulk, no undo obligation, no staleness window.
 
-The forward-looking risk is the reason this is an AgDR rather than a code comment: a later contributor reading `Registrar.php` will see a mutating ability already registered and reasonably conclude that `agent-apply-plan` was an oversight. Recording it makes "fixing" the inconsistency a decision someone has to argue against, not a tidy-up.
+The forward-looking risk is the reason this is an AgDR rather than a code comment, and it is sharper than a lone counter-example would make it: a later contributor reading `Registrar.php` sees **three of five** abilities already writing, all five publicly exposed, and would reasonably conclude that `agent-apply-plan` was an oversight. Recording it makes "fixing" the inconsistency a decision someone has to argue against, not a tidy-up.
 
 ## Options Considered
 
@@ -69,14 +69,14 @@ The forward-looking risk is the reason this is an AgDR rather than a code commen
 
 ## Decision
 
-Chosen: **the rule-derived inversion, the classification table with its two corrected classes and two value-threshold entries, and apply as a plan-scoped REST route rather than a WP Ability.**
+Chosen: **the rule-derived inversion, the classification table with its one corrected class (`ih_llm_disabled`) plus one corrected rationale (`mcd_provider_configurable`) and two value-threshold entries, and apply as a plan-scoped REST route rather than a WP Ability.**
 
 The derivation contract is fixed as: *reason code selects; signals + assembler supply target/before/after; simulation supplies the estimate.* Action identity is `hash(type, target.kind, target.id)`. Every catalog entry carries a predicate guaranteeing `before != after`. The `ActionType` enum freezes against this contract in #317, which is what lets the review UI (#319) be built against a fixture plan before the catalog (#320) exists.
 
 ## Consequences
 
 - **#317 can freeze the enum**, and **#319 can proceed against a fixture plan** — the decoupling in the implementation plan is real only because the contract above is fixed first.
-- **The classification drift test becomes a release gate**: a new reason code with no catalog entry fails CI, and the test asserts *class*, so the `ih_llm_disabled` / `mcd_provider_configurable` corrections are locked in rather than re-derivable.
+- **The classification drift test becomes a release gate**: a new reason code with no catalog entry fails CI, and the test asserts *class*, so the `ih_llm_disabled` class correction is locked in rather than re-derivable. Note the limit of that protection — `mcd_provider_configurable`'s class was already right, so no test would have caught its wrong rationale; only this record does.
 - **v1's fixable surface equals the rule table's coverage.** Combined with the FR-3b page-markup deferral and `md_conversion_quality` being diagnosis-only (both AgDR-0072), v1 diagnoses materially more than it fixes. That is a known, accepted position, not a discovered one.
 - **The Agent is not end-to-end agent-invocable in v1.** An external MCP/REST client can read the diagnosis and, in due course, a plan; it cannot apply one. Any future "make apply an ability" proposal must first solve per-plan ownership inside an input-independent `permission_callback` — otherwise it is a regression wearing a consistency argument.
 - **`Signal_Collector` gains a profile-override parameter** (step 7 / #321) as a direct consequence of corpus-derived estimates needing re-collection under a hypothetical profile. Plan generation therefore does real DB work; it is not a pure read.
