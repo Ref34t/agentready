@@ -322,8 +322,7 @@ PROMPT;
 
 		$post_id = (int) $post->ID;
 
-		$manual = \get_post_meta( $post_id, self::META_KEY_MANUAL, true );
-		if ( \is_string( $manual ) && '' !== \trim( $manual ) ) {
+		if ( self::has_manual( $post_id ) ) {
 			return false;
 		}
 
@@ -585,6 +584,20 @@ PROMPT;
 	}
 
 	/**
+	 * Whether a sticky admin override is present.
+	 *
+	 * Single read path for the "is this post sticky?" question, which
+	 * `should_schedule()`, `regenerate()`, the REST controller, and WP-CLI
+	 * all need to ask. Whitespace-only counts as absent, matching
+	 * `set_manual()`'s treatment of blank input as a clear.
+	 */
+	public static function has_manual( int $post_id ): bool {
+		$manual = \get_post_meta( $post_id, self::META_KEY_MANUAL, true );
+
+		return \is_string( $manual ) && '' !== \trim( $manual );
+	}
+
+	/**
 	 * Set the sticky admin-override `_manual` slot. Single write path so
 	 * the REST controller, WP-CLI, and any future programmatic surface all
 	 * share sanitisation + truncation.
@@ -624,15 +637,27 @@ PROMPT;
 
 	/**
 	 * Hard reset: clear the `_auto` slot + schedule a fresh cron run.
-	 * `_manual` is preserved — admin overrides survive regenerate.
 	 *
-	 * Idempotent: returns false when a cron event for this post is
-	 * already pending.
+	 * Returns false without touching any meta in two cases:
+	 *
+	 *   1. A cron event for this post is already pending (idempotence).
+	 *   2. A sticky `_manual` override is set. `should_schedule()` refuses
+	 *      such posts, so `run()` would exit early and generate nothing —
+	 *      clearing `_auto` first would destroy the cached description with
+	 *      no replacement, unrecoverably (#330). Callers must clear the
+	 *      override first; the descriptions UI already says so.
+	 *
+	 * Use `has_manual()` to tell the two refusals apart before calling, so
+	 * the reason can be surfaced to whoever asked.
 	 */
 	public static function regenerate( \WP_Post $post ): bool {
 		$post_id = (int) $post->ID;
 
 		if ( self::STATUS_PENDING === self::get_status( $post_id ) ) {
+			return false;
+		}
+
+		if ( self::has_manual( $post_id ) ) {
 			return false;
 		}
 

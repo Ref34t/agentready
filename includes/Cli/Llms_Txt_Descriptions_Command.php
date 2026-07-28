@@ -246,6 +246,18 @@ final class Llms_Txt_Descriptions_Command {
 			return;
 		}
 
+		// Ask before calling, so the two refusals (#330) report distinctly
+		// instead of both surfacing as "already pending".
+		if ( Description_Orchestrator::has_manual( $post_id ) ) {
+			\WP_CLI::warning(
+				\sprintf(
+					'Post #%d has a sticky manual description; nothing to regenerate. Clear the manual override first (Tools → Context → descriptions).',
+					$post_id
+				)
+			);
+			return;
+		}
+
 		$regenerated = Description_Orchestrator::regenerate( $post );
 
 		if ( ! $regenerated ) {
