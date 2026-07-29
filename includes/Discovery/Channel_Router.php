@@ -218,7 +218,12 @@ final class Channel_Router {
 			'status'  => 200,
 			'headers' => array(
 				'Content-Type'  => self::CHANNELS[ $channel ]['content_type'] . '; charset=' . self::charset(),
-				'X-Robots-Tag'  => 'noindex, nofollow',
+				// `noindex` but deliberately NOT `nofollow` (#338) — matches
+				// `LlmsTxt\Router`. Every channel here is a discovery document
+				// whose value is the URLs inside it (`ai.txt`, the llms policy,
+				// the AI layer manifest), so instructing a crawler to ignore
+				// those links defeats the channel's purpose. Do not re-add it.
+				'X-Robots-Tag'  => 'noindex',
 				'Cache-Control' => 'no-store, must-revalidate',
 			),
 			'body'    => $body,
@@ -253,7 +258,9 @@ final class Channel_Router {
 			'status'  => 404,
 			'headers' => array(
 				'Content-Type' => 'text/plain; charset=' . self::charset(),
-				'X-Robots-Tag' => 'noindex, nofollow',
+				// Same `noindex`-without-`nofollow` rule as the 200 path (#338),
+				// kept identical so the two can't drift apart.
+				'X-Robots-Tag' => 'noindex',
 			),
 			'body'    => '',
 		);

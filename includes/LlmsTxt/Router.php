@@ -204,7 +204,14 @@ final class Router {
 			'status'  => 200,
 			'headers' => array(
 				'Content-Type'  => 'text/plain; charset=' . self::charset(),
-				'X-Robots-Tag'  => 'noindex, nofollow',
+				// `noindex` but deliberately NOT `nofollow` (#338). The document
+				// has no business in search results, but it is nothing except a
+				// curated inventory of links — telling a crawler not to follow
+				// them turns the index into a dead end and defeats the whole
+				// point of publishing it. AI fetchers ignore this header, but
+				// crawlers on search infrastructure that also feed AI surfaces
+				// honour it. Do not re-add `nofollow` here.
+				'X-Robots-Tag'  => 'noindex',
 				'Cache-Control' => 'no-store, must-revalidate',
 			),
 			'body'    => $body,
@@ -229,7 +236,10 @@ final class Router {
 				'status'  => 404,
 				'headers' => array(
 					'Content-Type' => 'text/plain; charset=' . self::charset(),
-					'X-Robots-Tag' => 'noindex, nofollow',
+					// Same `noindex`-without-`nofollow` rule as the 200 path
+					// above (#338) — kept identical so the two responses can't
+					// drift into contradicting each other.
+					'X-Robots-Tag' => 'noindex',
 				),
 				'body'    => '',
 			);
@@ -239,7 +249,7 @@ final class Router {
 			'status'  => 200,
 			'headers' => array(
 				'Content-Type'  => 'text/plain; charset=' . self::charset(),
-				'X-Robots-Tag'  => 'noindex, nofollow',
+				'X-Robots-Tag'  => 'noindex',
 				'Cache-Control' => 'no-store, must-revalidate',
 			),
 			'body'    => Service::get_composed_full_body(),
