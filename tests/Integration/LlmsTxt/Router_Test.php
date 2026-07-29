@@ -87,7 +87,7 @@ final class Router_Test extends WP_UnitTestCase {
 		$this->assertSame( 200, $response['status'] );
 		$this->assertArrayHasKey( 'Content-Type', $response['headers'] );
 		$this->assertStringStartsWith( 'text/plain', $response['headers']['Content-Type'] );
-		$this->assertSame( 'noindex, nofollow', $response['headers']['X-Robots-Tag'] );
+		$this->assertSame( 'noindex', $response['headers']['X-Robots-Tag'] );
 		$this->assertSame( 'no-store, must-revalidate', $response['headers']['Cache-Control'] );
 	}
 
@@ -150,5 +150,36 @@ final class Router_Test extends WP_UnitTestCase {
 
 		$this->assertContains( Router::REWRITE_VAR, $vars );
 		$this->assertContains( 'foo', $vars );
+	}
+
+	/**
+	 * Regression guard for #338. The exact-match assertions elsewhere would
+	 * also catch a re-added `nofollow`, but they read as "the header equals
+	 * this string" rather than "this directive must never come back" — and the
+	 * reason it must not is easy to lose. `/llms.txt` is a curated inventory of
+	 * links; `nofollow` tells a crawler to ignore precisely the links the file
+	 * exists to publish, so it turns the index into a dead end. `noindex` is
+	 * the intended suppression and must stay.
+	 */
+	public function test_robots_header_suppresses_indexing_without_suppressing_links(): void {
+		self::factory()->post->create(
+			array(
+				'post_title'  => 'Linked',
+				'post_status' => 'publish',
+			)
+		);
+
+		$robots = Router::build_response()['headers']['X-Robots-Tag'];
+
+		$this->assertStringContainsString(
+			'noindex',
+			$robots,
+			'#338: the index should stay out of search results'
+		);
+		$this->assertStringNotContainsString(
+			'nofollow',
+			$robots,
+			'#338: nofollow would tell crawlers to ignore the very links /llms.txt exists to advertise'
+		);
 	}
 }

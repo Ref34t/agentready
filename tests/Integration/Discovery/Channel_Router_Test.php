@@ -47,7 +47,7 @@ final class Channel_Router_Test extends WP_UnitTestCase {
 
 		$this->assertSame( 200, $response['status'] );
 		$this->assertStringStartsWith( 'text/plain;', $response['headers']['Content-Type'] );
-		$this->assertSame( 'noindex, nofollow', $response['headers']['X-Robots-Tag'] );
+		$this->assertSame( 'noindex', $response['headers']['X-Robots-Tag'] );
 		$this->assertStringContainsString( 'LLMs-Index: ' . home_url( '/llms.txt' ), $response['body'] );
 		// Default stance: inference allowed, training denied (AgDR-0056).
 		$this->assertStringContainsString( 'Inference: allowed', $response['body'] );
@@ -109,7 +109,7 @@ final class Channel_Router_Test extends WP_UnitTestCase {
 		foreach ( array( 'ai_txt', 'llms_policy', 'ai_layer' ) as $channel ) {
 			$response = Channel_Router::build_response( $channel );
 			$this->assertSame( 404, $response['status'], "Channel '{$channel}' must soft-404 when disabled." );
-			$this->assertSame( 'noindex, nofollow', $response['headers']['X-Robots-Tag'] );
+			$this->assertSame( 'noindex', $response['headers']['X-Robots-Tag'] );
 		}
 	}
 

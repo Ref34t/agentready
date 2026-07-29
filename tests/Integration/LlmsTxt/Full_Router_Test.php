@@ -109,7 +109,7 @@ final class Full_Router_Test extends WP_UnitTestCase {
 
 		$this->assertSame( 200, $response['status'] );
 		$this->assertStringStartsWith( 'text/plain', $response['headers']['Content-Type'] );
-		$this->assertSame( 'noindex, nofollow', $response['headers']['X-Robots-Tag'] );
+		$this->assertSame( 'noindex', $response['headers']['X-Robots-Tag'] );
 		$this->assertStringContainsString( 'Full Body Post', $response['body'] );
 		// Index lines carry titles; only the full document carries body text.
 		$this->assertStringContainsString( 'The complete paragraph body.', $response['body'] );
