@@ -174,4 +174,81 @@ final class Handler_Test extends WP_UnitTestCase {
 		self::assertContains( Router::REWRITE_VAR, $vars );
 		self::assertContains( 'existing', $vars, 'Filter must preserve existing vars' );
 	}
+
+	/* ---------------------------------------------------------------------
+	 * Vary: Accept (#332)
+	 * ------------------------------------------------------------------- */
+
+	public function test_accept_negotiated_response_carries_vary_accept(): void {
+		$post = self::factory()->post->create_and_get(
+			array( 'post_content' => '<p>Negotiated.</p>' )
+		);
+
+		$response = Handler::build_response( $post, true );
+
+		self::assertSame(
+			'Accept',
+			$response['headers']['Vary'] ?? null,
+			'#332: a response reached by Accept negotiation on the canonical URL must advertise Vary: Accept so shared caches key the variant separately'
+		);
+	}
+
+	public function test_distinct_url_response_omits_vary_accept(): void {
+		$post = self::factory()->post->create_and_get(
+			array( 'post_content' => '<p>Distinct URL.</p>' )
+		);
+
+		$response = Handler::build_response( $post, false );
+
+		self::assertArrayNotHasKey(
+			'Vary',
+			$response['headers'],
+			'#332: /path.md and ?format=md return Markdown regardless of Accept — advertising Vary there only fragments the cache'
+		);
+	}
+
+	public function test_build_response_defaults_to_no_vary(): void {
+		$post = self::factory()->post->create_and_get(
+			array( 'post_content' => '<p>Default.</p>' )
+		);
+
+		self::assertArrayNotHasKey( 'Vary', Handler::build_response( $post )['headers'] );
+	}
+
+	public function test_cache_control_is_no_store_without_redundant_must_revalidate(): void {
+		$post = self::factory()->post->create_and_get(
+			array( 'post_content' => '<p>Cache policy.</p>' )
+		);
+
+		$response = Handler::build_response( $post );
+
+		self::assertSame(
+			'no-store',
+			$response['headers']['Cache-Control'],
+			'must-revalidate is redundant alongside no-store (#332)'
+		);
+	}
+
+	public function test_content_type_stays_text_plain_alongside_vary(): void {
+		$post = self::factory()->post->create_and_get(
+			array( 'post_content' => '<p>Compat.</p>' )
+		);
+
+		$response = Handler::build_response( $post, true );
+
+		self::assertSame(
+			'text/plain; charset=utf-8',
+			$response['headers']['Content-Type'],
+			'#293: ChatGPT rejects text/markdown — the Vary fix must not change the served type'
+		);
+	}
+
+	public function test_send_vary_header_hook_is_registered_on_send_headers(): void {
+		Router::register_hooks();
+
+		self::assertNotFalse(
+			has_action( 'send_headers', array( Handler::class, 'send_vary_header' ) ),
+			'#332: Vary must reach the HTML representation, which only send_headers sees'
+		);
+	}
 }

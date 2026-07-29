@@ -45,6 +45,11 @@ final class Router {
 		\add_action( 'init', array( self::class, 'add_rewrite_rule' ) );
 		\add_filter( 'query_vars', array( self::class, 'register_query_var' ) );
 		\add_action( 'template_redirect', array( Handler::class, 'maybe_serve_markdown' ), 0 );
+		// `Vary: Accept` on negotiable URLs — must reach the HTML representation
+		// too, so it hangs off `send_headers` rather than the Markdown dispatch
+		// (#332). Mirrors the `send_headers` priority used by the alternate
+		// advertiser's `Link` header.
+		\add_action( 'send_headers', array( Handler::class, 'send_vary_header' ), 10, 0 );
 	}
 
 	/**
