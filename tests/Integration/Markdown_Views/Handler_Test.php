@@ -251,4 +251,52 @@ final class Handler_Test extends WP_UnitTestCase {
 			'#332: Vary must reach the HTML representation, which only send_headers sees'
 		);
 	}
+
+	/* ---------------------------------------------------------------------
+	 * negotiates_on_accept() — the decision the Vary emission turns on.
+	 * Emitted headers are unobservable under the CLI SAPI, so the predicate
+	 * is asserted directly rather than through header inspection (#332).
+	 * ------------------------------------------------------------------- */
+
+	public function test_canonical_url_negotiates_on_accept(): void {
+		self::assertTrue(
+			Handler::negotiates_on_accept(),
+			'A bare canonical-URL request varies on Accept — it can return HTML or Markdown'
+		);
+	}
+
+	public function test_md_rewrite_url_does_not_negotiate_on_accept(): void {
+		set_query_var( Router::REWRITE_VAR, '2026/07/29/some-post' );
+
+		self::assertFalse(
+			Handler::negotiates_on_accept(),
+			'/path.md returns Markdown regardless of Accept, so it does not vary'
+		);
+	}
+
+	public function test_format_md_query_does_not_negotiate_on_accept(): void {
+		$_GET['format'] = 'md';
+
+		try {
+			self::assertFalse(
+				Handler::negotiates_on_accept(),
+				'?format=md returns Markdown regardless of Accept, so it does not vary'
+			);
+		} finally {
+			unset( $_GET['format'] );
+		}
+	}
+
+	public function test_unrelated_format_query_still_negotiates_on_accept(): void {
+		$_GET['format'] = 'json';
+
+		try {
+			self::assertTrue(
+				Handler::negotiates_on_accept(),
+				'Only format=md is a distinct-URL signal; other format values still vary on Accept'
+			);
+		} finally {
+			unset( $_GET['format'] );
+		}
+	}
 }

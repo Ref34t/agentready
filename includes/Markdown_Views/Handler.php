@@ -75,8 +75,9 @@ final class Handler {
 	 * `Vary` must appear on *every* variant of the resource, not just the
 	 * negotiated one — hence both here and in `build_response()`. This hook
 	 * runs on `send_headers`, which fires before `template_redirect`, so a
-	 * Markdown-negotiated request passes through here too; `dispatch()` then
-	 * re-sends the identical value, which is a no-op.
+	 * Markdown-negotiated request passes through here too and `dispatch()`
+	 * re-sends the same value; `dispatch()` therefore sends `Vary` with
+	 * append semantics so the second send cannot collapse the field.
 	 *
 	 * Appended (`false` third arg) so a `Vary` set by the theme, another
 	 * plugin, or the host stack is preserved rather than clobbered — repeated
@@ -116,10 +117,15 @@ final class Handler {
 	 * a plain HTML request to a negotiable URL still needs to advertise the
 	 * variance (that is the representation most crawlers land on).
 	 *
+	 * Public for the same reason `requested_as_markdown()` is — it's the
+	 * request-signal predicate this module's behaviour turns on, and emitted
+	 * headers aren't observable under the CLI SAPI, so the decision has to be
+	 * assertable directly.
+	 *
 	 * No nonce verification: read-only public route, same rationale as
 	 * `requested_as_markdown()`.
 	 */
-	private static function negotiates_on_accept(): bool {
+	public static function negotiates_on_accept(): bool {
 		if ( '' !== (string) \get_query_var( Router::REWRITE_VAR ) ) {
 			return false;
 		}
@@ -278,7 +284,17 @@ final class Handler {
 		\status_header( $response['status'] );
 
 		foreach ( $response['headers'] as $name => $value ) {
-			\header( $name . ': ' . $value );
+			// `Vary` is a comma-list header. Another plugin may have set its own
+			// (a page cache commonly sends `Vary: Cookie`), and replacing it
+			// here would collapse the field and silently drop that value —
+			// verified: with a `Vary: Cookie` sender installed, a replacing
+			// call returns `Vary: Accept`, an appending one `Vary: Cookie,Accept`.
+			// Only PHP-set values are at risk; a `Vary` the web server adds
+			// after PHP (Apache's `Accept-Encoding`, say) is out of reach either
+			// way. Every other header here is plugin-owned and must replace what
+			// the theme sent — that is how `text/plain` overrides `text/html`.
+			// Caught in review on #332.
+			\header( $name . ': ' . $value, 'Vary' !== $name );
 		}
 
 		// Output is raw Markdown served with `Content-Type: text/plain` —
