@@ -18,6 +18,7 @@ declare(strict_types=1);
 
 namespace Mokhai\Markdown_Views;
 
+use Mokhai\Admin\Context_Profile_Settings;
 use Mokhai\Support\Output_Buffer;
 
 \defined( 'ABSPATH' ) || exit;
@@ -54,7 +55,88 @@ final class Handler {
 			return;
 		}
 
-		self::dispatch( self::build_response( $post ) );
+		self::dispatch( self::build_response( $post, self::negotiates_on_accept() ) );
+	}
+
+	/**
+	 * `send_headers` callback: advertise `Vary: Accept` on a URL whose
+	 * representation depends on the request's `Accept` header.
+	 *
+	 * This covers the **HTML** representation. Of the three signals in
+	 * `requested_as_markdown()`, only `Accept: text/markdown` reuses the
+	 * canonical URL — `/path.md` and `?format=md` are distinct URLs a cache
+	 * already keys separately. So `/lessons/foo/` can return either HTML or
+	 * Markdown depending on a request header, which is exactly the condition
+	 * RFC 9110 § 12.5.5 requires `Vary` for. Without it, a shared cache
+	 * (CDN, reverse proxy, page-cache plugin) stores whichever variant it saw
+	 * first and serves it to everyone — humans receiving raw Markdown, or
+	 * agents receiving HTML (#332).
+	 *
+	 * `Vary` must appear on *every* variant of the resource, not just the
+	 * negotiated one — hence both here and in `build_response()`. This hook
+	 * runs on `send_headers`, which fires before `template_redirect`, so a
+	 * Markdown-negotiated request passes through here too and `dispatch()`
+	 * re-sends the same value; `dispatch()` therefore sends `Vary` with
+	 * append semantics so the second send cannot collapse the field.
+	 *
+	 * Appended (`false` third arg) so a `Vary` set by the theme, another
+	 * plugin, or the host stack is preserved rather than clobbered — repeated
+	 * `Vary` field lines combine per RFC 9110 § 5.3. Mirrors the append used
+	 * for the `Link` header in `Discovery\Alternate_Advertiser`.
+	 */
+	public static function send_vary_header(): void {
+		if ( \headers_sent() ) {
+			return;
+		}
+
+		if ( ! \function_exists( 'is_singular' ) || ! \is_singular() ) {
+			return;
+		}
+
+		if ( ! Context_Profile_Settings::is_module_enabled( 'markdown_views' ) ) {
+			return;
+		}
+
+		// A distinct-URL request (`/path.md`, `?format=md`) does not vary on
+		// Accept — it returns Markdown regardless. Advertising `Vary` there
+		// would only fragment the cache once these responses become cacheable
+		// (#333), so scope the header to the canonical URL.
+		if ( ! self::negotiates_on_accept() ) {
+			return;
+		}
+
+		\header( 'Vary: Accept', false );
+	}
+
+	/**
+	 * Whether the current request is one whose representation is chosen by the
+	 * `Accept` header — i.e. the canonical URL, with neither distinct-URL
+	 * signal present.
+	 *
+	 * Deliberately independent of whether Markdown was actually requested:
+	 * a plain HTML request to a negotiable URL still needs to advertise the
+	 * variance (that is the representation most crawlers land on).
+	 *
+	 * Public for the same reason `requested_as_markdown()` is — it's the
+	 * request-signal predicate this module's behaviour turns on, and emitted
+	 * headers aren't observable under the CLI SAPI, so the decision has to be
+	 * assertable directly.
+	 *
+	 * No nonce verification: read-only public route, same rationale as
+	 * `requested_as_markdown()`.
+	 */
+	public static function negotiates_on_accept(): bool {
+		if ( '' !== (string) \get_query_var( Router::REWRITE_VAR ) ) {
+			return false;
+		}
+
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		$format = isset( $_GET['format'] )
+			// phpcs:ignore WordPress.Security.NonceVerification.Recommended
+			? \sanitize_key( \wp_unslash( $_GET['format'] ) )
+			: '';
+
+		return 'md' !== $format;
 	}
 
 	/**
@@ -100,26 +182,42 @@ final class Handler {
 	 * `Service::get_markdown_for_post()` but does not touch globals or
 	 * emit headers. Returned as a plain array so tests can inspect.
 	 *
+	 * @param \WP_Post $post            The resolved post.
+	 * @param bool     $vary_on_accept  Whether this response was reached on the
+	 *                                  canonical URL via `Accept` negotiation
+	 *                                  (as opposed to the distinct `/path.md`
+	 *                                  or `?format=md` URLs). Adds
+	 *                                  `Vary: Accept` so a shared cache keys
+	 *                                  this variant separately from the HTML
+	 *                                  one (#332). Globals stay out of this
+	 *                                  method — the caller resolves the flag.
+	 *
 	 * @return array{status:int, headers:array<string,string>, body:string}
 	 */
-	public static function build_response( \WP_Post $post ): array {
+	public static function build_response( \WP_Post $post, bool $vary_on_accept = false ): array {
 		$result = Service::get_markdown_for_post( $post );
 
 		if ( \is_wp_error( $result ) ) {
 			return self::build_404_response();
 		}
 
+		$headers = array(
+			// text/plain, NOT text/markdown: ChatGPT's URL fetcher rejects
+			// text/markdown responses with a 400-class error and accepts
+			// text/plain; Claude's fetcher accepts both (#293, spike #291).
+			'Content-Type'        => 'text/plain; charset=utf-8',
+			'Content-Disposition' => 'inline',
+			'X-Robots-Tag'        => 'noindex',
+			'Cache-Control'       => 'no-store',
+		);
+
+		if ( $vary_on_accept ) {
+			$headers['Vary'] = 'Accept';
+		}
+
 		return array(
 			'status'  => 200,
-			'headers' => array(
-				// text/plain, NOT text/markdown: ChatGPT's URL fetcher rejects
-				// text/markdown responses with a 400-class error and accepts
-				// text/plain; Claude's fetcher accepts both (#293, spike #291).
-				'Content-Type'        => 'text/plain; charset=utf-8',
-				'Content-Disposition' => 'inline',
-				'X-Robots-Tag'        => 'noindex',
-				'Cache-Control'       => 'no-store, must-revalidate',
-			),
+			'headers' => $headers,
 			'body'    => $result,
 		);
 	}
@@ -186,7 +284,17 @@ final class Handler {
 		\status_header( $response['status'] );
 
 		foreach ( $response['headers'] as $name => $value ) {
-			\header( $name . ': ' . $value );
+			// `Vary` is a comma-list header. Another plugin may have set its own
+			// (a page cache commonly sends `Vary: Cookie`), and replacing it
+			// here would collapse the field and silently drop that value —
+			// verified: with a `Vary: Cookie` sender installed, a replacing
+			// call returns `Vary: Accept`, an appending one `Vary: Cookie,Accept`.
+			// Only PHP-set values are at risk; a `Vary` the web server adds
+			// after PHP (Apache's `Accept-Encoding`, say) is out of reach either
+			// way. Every other header here is plugin-owned and must replace what
+			// the theme sent — that is how `text/plain` overrides `text/html`.
+			// Caught in review on #332.
+			\header( $name . ': ' . $value, 'Vary' !== $name );
 		}
 
 		// Output is raw Markdown served with `Content-Type: text/plain` —
